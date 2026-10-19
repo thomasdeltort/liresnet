@@ -22,27 +22,42 @@ class RAbs(nn.Module):
 
 
 class MinMax(nn.Module):
-    def __init__(self, dim: int = 1, **kwargs) -> None:
+    # def __init__(self, dim: int = 1, **kwargs) -> None:
+    #     super(MinMax, self).__init__()
+    #     self.dim = dim
+
+    # def forward(self, x: Tensor) -> Tensor:
+
+    #     num_features = x.size(self.dim) // 2
+    #     part1, part2 = torch.split(x, num_features, dim=self.dim)
+
+    #     index = part1 > part2
+    #     max_part = torch.where(index, part1, part2)
+    #     min_part = torch.where(index, part2, part1)
+
+    #     x = torch.cat([max_part, min_part], dim=self.dim)
+    #     return 
+    def __init__(self, dim=1, **kwargs):
         super(MinMax, self).__init__()
-        self.dim = dim
+        self.axis = dim
+        self.relu = nn.ReLU()
 
-    def forward(self, x: Tensor) -> Tensor:
-
-        num_features = x.size(self.dim) // 2
-        part1, part2 = torch.split(x, num_features, dim=self.dim)
-
-        index = part1 > part2
-        max_part = torch.where(index, part1, part2)
-        min_part = torch.where(index, part2, part1)
-
-        x = torch.cat([max_part, min_part], dim=self.dim)
-        return x
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape
+        num_channels = shape[self.axis]
+        mid = num_channels // 2
+        x1, x2 = torch.split(x, [mid, mid], dim=self.axis)
+        diff = x2 - x1
+        relu_diff = self.relu(diff)
+        y_max = x1 + relu_diff
+        y_min = x2 - relu_diff
+        return torch.cat([y_max, y_min], dim=self.axis)
 
     def lipschitz(self) -> float:
         return 1.
 
     def extra_repr(self) -> str:
-        return f'dim={self.dim}'
+        return f'dim={self.axis}'
 
 
 class HalfAbs(nn.Module):
