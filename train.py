@@ -29,6 +29,11 @@ def get_args():
                         help='should be either `slurm` or `pytorch`')
     parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
 
+    parser.add_argument('--unconstrained_depth', default=0, type=int,
+                        help='Number of unconstrained final layers (triggers hybrid mode)')
+    parser.add_argument('--weight_decay_unconstrained', type=float, default=None,
+                        help='Explicit weight decay for the unconstrained head layers')
+
     return parser.parse_args()
 
 
@@ -82,7 +87,7 @@ def main():
 #        seed=dataset_cfg.get('seed', 2023))
 #    aug_iter = iter(aug_loader)
 
-    model = models.GloroNet(**model_cfg, **dataset_cfg)
+    model = models.GloroNet(**model_cfg, **dataset_cfg, unconstrained_depth=args.unconstrained_depth)
     if resume:
         model.load_state_dict(backbone_ckpt)
     print(model)
@@ -96,9 +101,34 @@ def main():
         optim_fn = torch.optim.NAdam
     else:
         optim_fn = torch.optim.Adam
-    optimizer = optim_fn(model.parameters(),
-                         lr=train_cfg['lr'],
-                         weight_decay=train_cfg['weight_decay'])
+
+    # Initialize the optimizer with targeted weight decay if the flag is provided
+    if args.unconstrained_depth > 0 and args.weight_decay_unconstrained is not None:
+        unconstrained_params = []
+        constrained_params = []
+        
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            # Target the injected MLP and the final head
+            if 'unconstrained_features' in name or 'head' in name:
+                unconstrained_params.append(param)
+            else:
+                constrained_params.append(param)
+                
+        param_groups = [
+            {'params': constrained_params, 'weight_decay': train_cfg.get('weight_decay', 0.0)},
+            {'params': unconstrained_params, 'weight_decay': args.weight_decay_unconstrained}
+        ]
+        
+        optimizer = optim_fn(param_groups, lr=train_cfg['lr'])
+        print(f"Applied targeted weight decay ({args.weight_decay_unconstrained}) to unconstrained layers.")
+    else:
+        # Standard initialization
+        optimizer = optim_fn(model.parameters(),
+                             lr=train_cfg['lr'],
+                             weight_decay=train_cfg.get('weight_decay', 0.0))
+    
     if cfg['training']['lookahead']:
         optimizer = timm.optim.Lookahead(optimizer)
         # --- PyTorch 2.4 Compatibility Patch ---
@@ -123,6 +153,7 @@ def main():
 
     os.makedirs(args.work_dir, exist_ok=True)
 
+    # Route the training loss dynamically
     train_fn = getattr(models, gloro_cfg['loss_type'])
 
     print('Begin Training')

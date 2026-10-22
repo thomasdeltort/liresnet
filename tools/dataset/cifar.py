@@ -2,7 +2,7 @@ import torchvision
 import torchvision.transforms as transforms
 
 
-def cifar_dataset(num_classes, data_root='./data/'):
+def cifar_dataset(num_classes, data_root='/home/thomas.deltort/robust-benchmark/train_models/data'):
 
     transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),

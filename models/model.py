@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .blocks import LiResConv, LiResMLP
+from .blocks import LiResConv, LiResMLP, UnconstrainedMLP
 from .layers import Conv2d, Sequential, build_activation
 
 
@@ -163,6 +163,7 @@ class GloroNet(nn.Module):
                  num_lc_iter: int = 10,
                  act_name: str = 'MinMax',
                  use_lln: bool = True,
+                 unconstrained_depth: int = 0,
                  **kwargs):
         super(GloroNet, self).__init__()
 
@@ -184,11 +185,27 @@ class GloroNet(nn.Module):
                             feat_size=feature_size,
                             out_dim=out_dim,
                             activation=activation)
+        # 1. Calculate how many hidden layers become unconstrained.
+        # The head is always the final (1st) unconstrained layer.
+        hidden_unconstrained_depth = max(0, unconstrained_depth - 1)
+        
+        # 2. Subtract those layers from the constrained LiResMLP block 
+        # (Assuming the original hardcoded depth was 8)
+        constrained_mlp_depth = max(0, 8 - hidden_unconstrained_depth)
+
         self.linear = LiResMLP(num_features=out_dim,
-                               depth=8,
+                               depth=constrained_mlp_depth, # <-- DYNAMIC DEPTH
                                activation=activation)
 
-        self.head = head(out_dim, num_classes, use_lln)
+        # 3. Inject the unconstrained hidden layers
+        self.unconstrained_features = UnconstrainedMLP(
+            out_dim, 
+            hidden_unconstrained_depth, 
+            num_lc_iter
+        )
+        
+        # 4. Final classification layer (n-th layer)
+        self.head = head(out_dim, num_classes, use_lln=(use_lln if unconstrained_depth == 0 else False))
 
         self.num_lc_iter = num_lc_iter
         self.set_num_lc_iter()
@@ -213,6 +230,10 @@ class GloroNet(nn.Module):
         x = self.conv(x)
         x = self.neck(x)
         x = self.linear(x)
+
+        # Pass through unconstrained layers before the head
+        x = self.unconstrained_features(x)
+
         if return_feat:
             return x
         x = self.head(x)
@@ -224,4 +245,7 @@ class GloroNet(nn.Module):
         lc = lc * self.neck.lipschitz()
         lc = lc * self.conv.lipschitz()
         lc = lc * self.linear.lipschitz()
+        
+        # Inflate the Lipschitz bound by the unconstrained layers
+        lc = lc * self.unconstrained_features.lipschitz()
         return lc

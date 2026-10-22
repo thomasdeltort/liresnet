@@ -94,7 +94,52 @@ class LiResConv(nn.Module):
                f'width={self.width}, ' \
                f'centering={self.centering}'
 
+class UnconstrainedMLP(nn.Module):
+    def __init__(self, in_features, depth, num_lc_iter=10):
+        super().__init__()
+        self.depth = depth
+        self.num_lc_iter = num_lc_iter
+        
+        # Build n-1 linear layers with standard ReLU
+        layers = []
+        for _ in range(depth):
+            layers.append(nn.Linear(in_features, in_features))
+            layers.append(nn.ReLU(inplace=False))
+        self.network = nn.Sequential(*layers)
+        
+        # Buffer for power iteration (spectral norm estimation)
+        self.register_buffer('init_x', torch.ones(1, in_features))
 
+    def forward(self, x):
+        return self.network(x)
+
+    def lipschitz(self):
+        """Estimate the global Lipschitz of the unconstrained block via Power Iteration."""
+        if self.depth == 0:
+            return 1.0
+            
+        x = self.init_x.data
+        lc = 1.0
+        
+        # Iterate through only the Linear layers to get the product of their spectral norms
+        for layer in self.network:
+            if isinstance(layer, nn.Linear):
+                W = layer.weight
+                WT = W.T.contiguous()
+                
+                # Power iteration for this specific layer
+                v = x.clone()
+                for _ in range(self.num_lc_iter * 2):
+                    v = F.linear(v, W)
+                    v = F.linear(v, WT)
+                    v = F.normalize(v, dim=1)
+                
+                # Spectral norm is the L2 norm of W*v
+                layer_lc = F.linear(v, W).norm()
+                lc = lc * layer_lc
+                
+        return lc
+        
 class LiResMLP(nn.Module):
     def __init__(self,
                  num_features: int,
