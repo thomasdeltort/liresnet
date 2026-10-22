@@ -9,7 +9,7 @@ def data_loader(data_name: str = 'cifar',
                 num_classes: int = 10,
                 batch_size: int = 128,
                 distributed: bool = True,
-                data_root: str = './data/',
+                data_root: str = "/lustre/fswork/projects/rech/syo/utf64nw/robust-benchmark/train_models/data/",
                 seed: int = 2023,
                 **kargs):
 

@@ -75,12 +75,12 @@ def main():
         num_classes=dataset_cfg['num_classes'],
         seed=dataset_cfg.get('seed', 2023))  # if seed is not given, use 2023
 
-    aug_loader, aug_sampler, _, _ = tools.data_loader(
-        data_name='ddpm',
-        batch_size=train_cfg['batch_size'] // num_gpus * 3,
-        num_classes=dataset_cfg['num_classes'],
-        seed=dataset_cfg.get('seed', 2023))
-    aug_iter = iter(aug_loader)
+#    aug_loader, aug_sampler, _, _ = tools.data_loader(
+#        data_name='ddpm',
+#        batch_size=train_cfg['batch_size'] // num_gpus * 3,
+#        num_classes=dataset_cfg['num_classes'],
+#        seed=dataset_cfg.get('seed', 2023))
+#    aug_iter = iter(aug_loader)
 
     model = models.GloroNet(**model_cfg, **dataset_cfg)
     if resume:
@@ -101,6 +101,9 @@ def main():
                          weight_decay=train_cfg['weight_decay'])
     if cfg['training']['lookahead']:
         optimizer = timm.optim.Lookahead(optimizer)
+        # --- PyTorch 2.4 Compatibility Patch ---
+        optimizer._optimizer_step_pre_hooks = {}
+        optimizer._optimizer_step_post_hooks = {}
 
     scheduler = tools.lr_scheduler(iter_per_epoch=len(train_loader),
                                    max_epoch=train_cfg['epochs'],
@@ -139,15 +142,15 @@ def main():
             bs = inputs.shape[0]
             sub_lipschitz = model.module.sub_lipschitz()
 
-            try:
-                input2, target2 = next(aug_iter)
-            except StopIteration:
-                aug_sampler.set_epoch(epoch)
-                aug_iter = iter(aug_loader)
-                input2, target2 = next(aug_iter)
-
-            inputs = torch.cat([inputs, input2])
-            targets = torch.cat([targets, target2])
+#            try:
+#                input2, target2 = next(aug_iter)
+#            except StopIteration:
+#                aug_sampler.set_epoch(epoch)
+#                aug_iter = iter(aug_loader)
+#                input2, target2 = next(aug_iter)
+#
+#            inputs = torch.cat([inputs, input2])
+#            targets = torch.cat([targets, target2])
 
             inputs = inputs.cuda(non_blocking=True)
             targets = targets.cuda(non_blocking=True)

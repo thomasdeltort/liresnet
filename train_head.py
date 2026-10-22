@@ -135,21 +135,29 @@ def evaluate_full_test_set(prefix, suffix, L_prefix, args, device, run_dir, clas
             is_robust_cra = is_correct & (margins > cert_threshold)
             correct_cra += is_robust_cra.sum().item()
             
-            # 3. Hybrid VRA (SDP-CROWN) - Only if flag is provided
+            # 3. Hybrid VRA (SDP-CROWN) - Corrected Batch Pre-Slicing
             if args.eval_full_test:
-                clean_indices = is_correct.nonzero(as_tuple=True)[0]
-                if len(clean_indices) > 0:
-                    z_k = prefix(data)
+                clean_indices_local = is_correct.nonzero(as_tuple=True)[0]
+                
+                if len(clean_indices_local) > 0:
+                    # Pre-slice latent features and targets so the solver only processes clean points
+                    z_k_clean = prefix(data)[clean_indices_local]
+                    targets_clean = targets[clean_indices_local]
+                    
+                    # Local indices for the pre-sliced batch are simply 0 to len(clean_indices_local) - 1
+                    solver_indices = torch.arange(len(clean_indices_local), device=device)
+                    
                     with open(os.devnull, 'w') as fnull, redirect_stdout(fnull):
-#                        print(suffix)
                         batch_vra_percent, _, _ = compute_sdp_crown_vra(
-                            z_k, targets, suffix, intermediate_epsilon, 
-                            clean_indices, device, classes, args, 
-                            batch_size=args.batch_size, return_robust_points=True, 
+                            z_k_clean, targets_clean, suffix, intermediate_epsilon, 
+                            solver_indices, device, classes, args, 
+                            batch_size=len(clean_indices_local), return_robust_points=True, 
                             x_U=None, x_L=None
                         )
-                    # Convert returned percentage back to raw counts for this batch
-                    correct_vra += int((batch_vra_percent / 100.0) * bs)
+                        
+                    # Convert returned percentage of CLEAN points back to absolute counts
+                    n_robust_points = int(round((batch_vra_percent / 100.0) * len(clean_indices_local)))
+                    correct_vra += n_robust_points
                     
         print(f"Processed {total_samples}/10000 images...", end='\r')
 
@@ -195,6 +203,7 @@ def main():
     
     # Architecture Splitting
     parser.add_argument('--drop_n', default=2, type=int, help='Number of linear layers in the trainable Suffix.')
+    parser.add_argument('--replace_relu', action='store_true', help='Replace non-linear activations in the suffix with ReLU.')
     
     # Verification Arguments
     parser.add_argument('--val_freq', type=int, default=20, help="Run formal verification every X epochs")
@@ -242,8 +251,36 @@ def main():
     vanilla_model = original_model.to(device)
     vanilla_model = liresnet_vanilla_export(vanilla_model).to(device)
     
+#    # ==========================================
+#    # 3. Physically Split the Network
+#    # ==========================================
+#    all_blocks = [
+#        vanilla_model.stem,
+#        vanilla_model.conv,
+#        vanilla_model.neck.conv,
+#        Flatten(),
+#        vanilla_model.neck.linear,
+#        vanilla_model.neck.activation
+#    ]
+#    for layer in vanilla_model.linear: 
+#        all_blocks.append(layer)
+#    all_blocks.append(vanilla_model.head)
+#
+#    # Locate cut point
+#    linear_indices = [i for i, m in enumerate(all_blocks) if isinstance(m, nn.Linear)]
+#    split_idx = linear_indices[-args.drop_n]
+#
+#    prefix = PrefixWrapper(all_blocks[:split_idx]).to(device)
+#    suffix = nn.Sequential(*all_blocks[split_idx:]).to(device)
+#
+#    # Freeze Backbone, Train Suffix
+#    for param in prefix.parameters(): param.requires_grad = False
+#    for param in suffix.parameters(): param.requires_grad = True
+#
+#    print(f"[*] Split complete. Trainable Suffix contains {len(all_blocks[split_idx:])} modules.")
+
     # ==========================================
-    # 3. Physically Split the Network
+    # 3. Physically Split the Network & Replace GS2 with ReLU
     # ==========================================
     all_blocks = [
         vanilla_model.stem,
@@ -261,14 +298,28 @@ def main():
     linear_indices = [i for i, m in enumerate(all_blocks) if isinstance(m, nn.Linear)]
     split_idx = linear_indices[-args.drop_n]
 
-    prefix = PrefixWrapper(all_blocks[:split_idx]).to(device)
-    suffix = nn.Sequential(*all_blocks[split_idx:]).to(device)
+    # Build Prefix (Frozen Backbone)
+    prefix_modules = all_blocks[:split_idx]
+    prefix = PrefixWrapper(prefix_modules).to(device)
+
+    # Build Suffix (Trainable Head) & (Optionally) Replace GS2 with ReLU
+    suffix_modules = []
+    for m in all_blocks[split_idx:]:
+        # If the flag is ON and the module is a non-linear activation, replace with ReLU
+        if args.replace_relu and not isinstance(m, (nn.Linear, Flatten)):
+            suffix_modules.append(nn.ReLU())
+        else:
+            suffix_modules.append(m)
+
+    suffix = nn.Sequential(*suffix_modules).to(device)
 
     # Freeze Backbone, Train Suffix
     for param in prefix.parameters(): param.requires_grad = False
     for param in suffix.parameters(): param.requires_grad = True
 
-    print(f"[*] Split complete. Trainable Suffix contains {len(all_blocks[split_idx:])} modules.")
+    replacement_status = "with ReLU activations" if args.replace_relu else "with original activations"
+    print(f"[*] Split complete. Trainable Suffix contains {len(suffix_modules)} modules {replacement_status}.")
+    print(f"[*] Suffix Architecture:\n{suffix}")
 
     # ==========================================
     # 4. Training Setup (Using ScheduleFree)
